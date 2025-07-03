@@ -10,8 +10,6 @@
 This repository contains the source code for a university project developed during the Bachelor’s Degree in Computer Science at the University of Urbino. The project was created for the course *Sistemi Distribuiti* (Distributed Systems) and focuses on implementing a fault-tolerant peer-to-peer chat system.
 The system allows users to communicate through a decentralized network where each node can operate either as a client or as a server. If the main server disconnects, an election mechanism ensures that a new server is automatically promoted among the connected peers, maintaining the continuity of the chat service.
 
-The project was developed by [me](https://github.com/KevAtta) and [Giorgia Roselli](https://github.com/GioRoss) as part of the final exam for the course.
-
 ---
 
 ## What It Does
