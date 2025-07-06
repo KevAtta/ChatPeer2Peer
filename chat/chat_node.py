@@ -4,6 +4,8 @@ import json
 import time
 import signal
 import sys
+import os
+from datetime import datetime
 from utils.helpers import get_timestamp
 from constants.constants import BUFFER_SIZE
 from constants.constants import DEFAULT_PORT
@@ -55,6 +57,91 @@ class ChatNode:
         # setup signal handlers
         signal.signal(signal.SIGINT, self.signal_handler) # gestione del segnale Ctrl+C (SIGINT)
         signal.signal(signal.SIGTERM, self.signal_handler) # estione della terminazione da sistema (SIGTERM)
+        
+        # Sistema di logging
+        self.chat_log = []  # lista per memorizzare i messaggi
+        self.log_directory = "chat_logs"  # directory per i file di log
+        self.ensure_log_directory()
+    
+    # Funzione che crea la directory per i log se non esiste già
+    def ensure_log_directory(self):
+        # controlla se la directory specificata in self.log_directory esiste, nel caso non esiste la crea
+        if not os.path.exists(self.log_directory):
+            os.makedirs(self.log_directory)
+    
+    # Aggiunge un nuovo messaggio alla struttura interna di log
+    def add_to_log(self, message_type, username, message, timestamp=None):
+        # se non viene fornito un timestamp, genera uno nuovo
+        if timestamp is None:
+            timestamp = get_timestamp()
+        
+        # creazione un dizionario con tutti i metadati del messaggio
+        log_entry = {
+            'timestamp': timestamp,
+            'type': message_type,
+            'username': username,
+            'message': message
+        }
+        
+        # aggiunge l'entry alla lista interna dei log
+        self.chat_log.append(log_entry)
+    
+    # Salva il log completo della chat in un file di testo. Il file viene creato nella directory di log con un nome univoco basato su
+    # username e intervallo temporale della sessione
+    def save_chat_log(self):
+        # controlla se ci sono messaggi da salvare
+        if not self.chat_log:
+            print("Nessun messaggio da salvare nel log.")
+            return
+        
+        # Genera nome file con timestamp
+        now = datetime.now() # ottiene il timestamp corrente
+        session_start = datetime.fromtimestamp(self.connection_time if hasattr(self, 'connection_time') else time.time()) # determina l'inizio della sessione: usa connection_time se disponibile, altrimenti il momento attuale
+        
+        # costruisce il nome del file con pattern: chat_log_username_start_to_end.log
+        filename = f"chat_log_{self.username}_{session_start.strftime('%Y%m%d_%H%M%S')}_to_{now.strftime('%Y%m%d_%H%M%S')}.log"
+        # crea il percorso completo combinando directory e nome file
+        filepath = os.path.join(self.log_directory, filename)
+        
+        try:
+            # apre il file in modalità scrittura con codifica UTF-8
+            with open(filepath, 'w', encoding='utf-8') as f:
+                # intestazione del log
+                f.write("="*80 + "\n")
+                f.write(f"CHAT LOG - Utente: {self.username}\n")
+                f.write(f"Sessione: {session_start.strftime('%Y-%m-%d %H:%M:%S')} - {now.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Modalità: {'SERVER' if self.is_server else 'CLIENT'}\n")
+
+                # se è un client, aggiunge le informazioni del server di connessione
+                if self.is_client:
+                    f.write(f"Server: {self.server_username} ({self.server_host}:{self.server_port})\n")
+                f.write("="*80 + "\n\n")
+                
+                # itera attraverso tutti i messaggi nel log
+                for entry in self.chat_log:
+                    # estrae i campi dal dizionario dell'entry
+                    timestamp = entry['timestamp']
+                    msg_type = entry['type']
+                    username = entry['username']
+                    message = entry['message']
+                    
+                    # formatta il messaggio in base al tipo
+                    if msg_type == 'chat_message':
+                        f.write(f"[{timestamp}] {username}: {message}\n")  # messaggio di un client
+                    elif msg_type == 'server_message':
+                        f.write(f"[{timestamp}] {username} (SERVER): {message}\n") # messaggio del server con identificazione specifica
+                    elif msg_type == 'system':
+                        f.write(f"[{timestamp}] >>> {message}\n") # messaggio di sistema (connessioni, disconnessioni, etc.)
+                
+                # footer del log
+                f.write("\n" + "="*80 + "\n")
+                f.write("FINE LOG\n")
+            
+            print(f"Chat salvata in: {filepath}")
+
+        # cattura eventuali errori durante la scrittura    
+        except Exception as e:
+            print(f"Errore nel salvare il log: {e}")
 
     # Funzione che gestisce i segnali di terminazione del processo (es. Ctrl+C).
     # Avvia lo shutdown ordinato del nodo e termina il programma.
@@ -167,7 +254,6 @@ class ChatNode:
                 
                 print("CONNESSO AL SERVER")
                 print(f"Connesso al server '{self.server_username}' su {host}:{port}")
-                print(f"{response['message']}")
                 print("=" * 60)
                 print("Digita i tuoi messaggi per inviarli a tutti nella chat")
                 print("Digita 'quit' per disconnetterti")
@@ -357,34 +443,60 @@ class ChatNode:
     # Funzione che gestisce i messaggi ricevuti dal server.
     # Analizza il tipo di messaggio e agisce di conseguenza: stampa messaggi, aggiorna peer o rileva disconnessione.
     def process_server_message(self, message_data):
-         # messaggio di chat da un altro utente quindi stampa il messaggio con timestamp e nome utente
+        # messaggio di chat da un altro utente quindi stampa il messaggio con timestamp e nome utente
         if message_data['type'] == 'chat_message':
             timestamp = message_data.get('timestamp', get_timestamp())
             username = message_data['username']
             message = message_data['message']
+            
+            # aggiunta messaggio alla struttura di log (per i client)
+            self.add_to_log('chat_message', username, message, timestamp)
+            
             print(f"[{timestamp}] {colored(username, 'yellow')} ha scritto: {message}")
         
-        # messaggio del server (es. annunci)
+        # messaggio del server
         elif message_data['type'] == 'server_message':
             timestamp = message_data.get('timestamp', get_timestamp())
             message = message_data['message']
+            
+            # aggiunta messaggio alla struttura di log (per i server)
+            self.add_to_log('server_message', self.server_username, message, timestamp)
+            
             print(f"[{timestamp}] {colored(self.server_username, 'yellow')} ha scritto: {message}")
         
         # notifica che un nuovo utente si è unito
         elif message_data['type'] == 'user_joined':
-            print(f">>> {message_data['message']}")
+            timestamp = get_timestamp()
+            message = message_data['message']
+            
+            # aggiunta messaggio alla struttura di log (messaggio di sistema)
+            self.add_to_log('system', 'SYSTEM', message, timestamp)
+            
+            print(f">>> {message}")
             if 'peer_list' in message_data:
                 self.peer_list = message_data['peer_list']
-        
+
         # notifica che un utente ha lasciato la chat
         elif message_data['type'] == 'user_left':
-            print(f">>> {message_data['message']}")
+            timestamp = get_timestamp()
+            message = message_data['message']
+            
+            # aggiunta messaggio alla struttura di log (messaggio di sistema)
+            self.add_to_log('system', 'SYSTEM', message, timestamp)
+            
+            print(f">>> {message}")
             if 'peer_list' in message_data:
                 self.peer_list = message_data['peer_list']
         
         # il server sta chiudendo la chat
         elif message_data['type'] == 'server_shutdown':
-            print(f">>> {message_data['message']}")
+            timestamp = get_timestamp()
+            message = message_data['message']
+            
+            # aggiunta messaggio alla struttura di log (messaggio di sistema)
+            self.add_to_log('system', 'SYSTEM', message, timestamp)
+            
+            print(f">>> {message}")
             return False
         
         return True
@@ -686,6 +798,9 @@ class ChatNode:
                     if message_data['type'] == 'chat_message':
                         timestamp = get_timestamp()
                         message_text = message_data['message']
+
+                        # aggiunge il messaggio alla struttura di log (dal server per i client)
+                        self.add_to_log('chat_message', client_username, message_text, timestamp)
                         
                         print(f"[{timestamp}] {colored(client_username, 'yellow')} ha scritto: {message_text}")
                         
@@ -722,21 +837,25 @@ class ChatNode:
 
             # rimuove il client dalla lista dei connessi
             del self.connected_clients[client_socket]
-            
-            print(f">>> {client_username} si è disconnesso")
-            # mostra il numero aggiornato di client connessi
-            self.show_client_count()
-            
-            # aggiorna la peer list da inviare agli altri client
-            peer_list = self.get_peer_list_for_client()
-            
-            # invia un messaggio di broadcast a tutti i peer per notificare la disconnessione
-            self.broadcast_to_clients({
-                'type': 'user_left',
-                'username': client_username,
-                'message': f'{client_username} ha lasciato la chat',
-                'peer_list': peer_list
-            })
+
+            # controllo per vedere se il server non è in fase di shutdown
+            if not self.shutdown_event.is_set():
+                self.add_to_log('system', 'SYSTEM', f'{client_username} ha lasciato la chat')
+
+                # se non è in corso lo shutdown, stampa un messaggio di disconnessione e mostro il numero aggiornato di client connessi
+                print(f">>> {client_username} si è disconnesso")
+                self.show_client_count()
+                
+                # aggiorna la peer list da inviare agli altri client
+                peer_list = self.get_peer_list_for_client()
+                
+                # invia un messaggio di broadcast a tutti i peer per notificare la disconnessione
+                self.broadcast_to_clients({
+                    'type': 'user_left',
+                    'username': client_username,
+                    'message': f'{client_username} ha lasciato la chat',
+                    'peer_list': peer_list
+                })
         
         try:
             client_socket.close() # chiude il socket del client in modo sicuro
@@ -777,6 +896,9 @@ class ChatNode:
             
             timestamp = get_timestamp()
 
+            # registra nel log locale del server il messaggio inviato
+            self.add_to_log('server_message', self.username, message, timestamp)
+
             # messaggio da inviare a tutti i client
             self.broadcast_to_clients({
                 'type': 'server_message',
@@ -789,6 +911,10 @@ class ChatNode:
         # se chi ha invocato questa funzione è il client ed è connesso al server, allora invia il messaggio al server
         elif self.is_client and self.connected_to_server:
             try:
+                timestamp = get_timestamp()
+                # registra nel log locale del client il messaggio che sta per inviare
+                self.add_to_log('chat_message', self.username, message, timestamp)
+
                 # crea il messaggio da inviare al server
                 message_data = {
                     'type': 'chat_message',
@@ -869,6 +995,10 @@ class ChatNode:
     # Chiude connessioni, ferma i thread attivi e libera le risorse.
     def shutdown(self):
         print("\nChiusura in corso...")
+
+        # salvataggio del log della chat in un file di testo
+        self.save_chat_log()
+
         self.running = False # ferma il loop principale del nodo
         self.shutdown_event.set() # segnala a tutti i thread che è in corso lo shutdown
         
